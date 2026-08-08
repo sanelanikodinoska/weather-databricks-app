@@ -209,6 +209,7 @@ def get_forecast(location: str, days: int = 7) -> Dict[str, Any]:
             "precipitation_in": daily["precipitation_sum"][i],
             "precip_probability_pct": daily["precipitation_probability_max"][i],
             "conditions": conditions,
+            "weather_code": weather_code,
         })
 
     return {
@@ -263,13 +264,7 @@ def predict_recommendation(location: str, date: str) -> Dict[str, Any]:
     temp_high = target_day["temp_high_f"]
     temp_low = target_day["temp_low_f"]
     conditions = target_day["conditions"]
-
-    # Infer weather_code from conditions (reverse lookup)
-    weather_code = 0
-    for code, desc in WMO_CODES.items():
-        if desc == conditions:
-            weather_code = code
-            break
+    weather_code = target_day.get("weather_code", 0)
 
     # Apply threshold logic
     alerts = []
