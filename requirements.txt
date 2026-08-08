@@ -5,6 +5,9 @@ sqlalchemy>=2.0.30
 flask>=3.0.3
 requests>=2.32.3
 python-dotenv>=1.0.1
-sentence-transformers>=2.7.0
 numpy>=1.26.0
 openai>=1.30.0
+# sentence-transformers is required for /weather/search (vector similarity).
+# Install separately in the Databricks cluster running ingest_weather_embeddings.py.
+# Uncomment below if your Databricks App plan supports large dependencies:
+# sentence-transformers>=2.7.0
