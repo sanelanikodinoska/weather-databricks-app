@@ -1,4 +1,4 @@
-"""
+""
 Weather client — two API adapters in one module.
 
 NWS (WeatherClient)

@@ -4,25 +4,29 @@
 # MAGIC
 # MAGIC Reads unembedded rows from `weather_documents`, chunks `narrative_text`,
 # MAGIC embeds with `sentence-transformers/all-MiniLM-L6-v2` (384-dim), and writes
-# MAGIC vectors into `weather_embeddings` via psycopg2.
+# MAGIC vectors into `weather_embeddings` via pg8000 (pure-Python Postgres driver).
 # MAGIC
 # MAGIC **Run after** `POST /weather/sync` has populated `weather_documents`.
-# MAGIC Do NOT use Spark JDBC writes — not supported against Lakebase.
+# MAGIC
+# MAGIC **Serverless-compatible** using pg8000 instead of psycopg2-binary.
 
 # COMMAND ----------
-# MAGIC %pip install sentence-transformers psycopg2-binary databricks-sdk --quiet
+
+# DBTITLE 1,Cell 2
+# MAGIC %pip install pg8000 sentence-transformers databricks-sdk --quiet
 
 # COMMAND ----------
 
+# DBTITLE 1,Cell 3
 import base64
 import os
 from itertools import islice
 from typing import Iterator
 
-import psycopg2
+import pg8000.dbapi
 from databricks.sdk import WorkspaceClient
-from psycopg2.extras import RealDictCursor, execute_values
 from sentence_transformers import SentenceTransformer
+from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Config
@@ -48,16 +52,23 @@ print(f"Model: {EMBEDDING_MODEL} | chunk_size={CHUNK_SIZE} | overlap={CHUNK_OVER
 # Lakebase connection
 # ---------------------------------------------------------------------------
 
-def _get_lakebase_url() -> str:
+def _get_lakebase_connection_params() -> dict:
     w = WorkspaceClient()
     secret = w.secrets.get_secret(scope=LAKEBASE_SECRET_SCOPE, key=LAKEBASE_SECRET_KEY)
-    return base64.b64decode(secret.value).decode("utf-8")
+    url = base64.b64decode(secret.value).decode("utf-8")
+    parsed = urlparse(url)
+    return {
+        "host": parsed.hostname,
+        "port": parsed.port or 5432,
+        "database": parsed.path.lstrip('/'),
+        "user": parsed.username,
+        "password": parsed.password
+    }
 
-_LAKEBASE_URL = _get_lakebase_url()
-
+_CONN_PARAMS = _get_lakebase_connection_params()
 
 def get_connection():
-    return psycopg2.connect(_LAKEBASE_URL, cursor_factory=RealDictCursor)
+    return pg8000.dbapi.connect(**_CONN_PARAMS)
 
 # ---------------------------------------------------------------------------
 # Chunking — sliding window over words
@@ -97,19 +108,24 @@ print("Model loaded.")
 # Fetch unembedded documents
 # ---------------------------------------------------------------------------
 
-with get_connection() as conn:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT d.id, d.narrative_text
-            FROM weather_documents d
-            WHERE NOT EXISTS (
-                SELECT 1 FROM weather_embeddings e WHERE e.document_id = d.id
-            )
-            ORDER BY d.synced_at
-            """
+conn = get_connection()
+try:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT d.id, d.narrative_text
+        FROM weather_documents d
+        WHERE NOT EXISTS (
+            SELECT 1 FROM weather_embeddings e WHERE e.document_id = d.id
         )
-        unembedded = cur.fetchall()
+        ORDER BY d.synced_at
+        """
+    )
+    columns = [desc[0] for desc in cur.description]
+    unembedded = [dict(zip(columns, row)) for row in cur.fetchall()]
+    cur.close()
+finally:
+    conn.close()
 
 print(f"Unembedded documents: {len(unembedded)}")
 
@@ -131,42 +147,46 @@ print(f"Total chunks to embed: {len(all_chunks)}")
 
 total_written = 0
 
-with get_connection() as conn:
-    with conn.cursor() as cur:
-        for batch in batched(all_chunks, BATCH_SIZE):
-            texts = [c[2] for c in batch]
-            embeddings = model.encode(texts, show_progress_bar=False)
+conn = get_connection()
+try:
+    cur = conn.cursor()
+    for batch in batched(all_chunks, BATCH_SIZE):
+        texts = [c[2] for c in batch]
+        embeddings = model.encode(texts, show_progress_bar=False)
 
-            rows_to_insert = [
-                (
-                    doc_id,
-                    chunk_idx,
-                    chunk_txt,
-                    "[" + ",".join(str(float(v)) for v in emb.tolist()) + "]",
-                    EMBEDDING_MODEL,
-                )
-                for (doc_id, chunk_idx, chunk_txt), emb in zip(batch, embeddings)
-            ]
+        rows_to_insert = [
+            (
+                doc_id,
+                chunk_idx,
+                chunk_txt,
+                "[" + ",".join(str(float(v)) for v in emb.tolist()) + "]",
+                EMBEDDING_MODEL,
+            )
+            for (doc_id, chunk_idx, chunk_txt), emb in zip(batch, embeddings)
+        ]
 
-            execute_values(
-                cur,
+        # Insert each row individually (pg8000 doesn't have execute_values)
+        for doc_id, chunk_idx, chunk_txt, emb_str, model_name in rows_to_insert:
+            cur.execute(
                 """
                 INSERT INTO weather_embeddings
                     (document_id, chunk_index, chunk_text, embedding, model_name, created_at)
-                VALUES %s
+                VALUES (%s, %s, %s, %s::vector, %s, NOW())
                 ON CONFLICT (document_id, chunk_index) DO UPDATE SET
                     chunk_text = EXCLUDED.chunk_text,
                     embedding  = EXCLUDED.embedding,
                     model_name = EXCLUDED.model_name,
                     created_at = NOW()
                 """,
-                rows_to_insert,
-                template="(%s, %s, %s, %s::vector, %s, NOW())",
+                (doc_id, chunk_idx, chunk_txt, emb_str, model_name)
             )
-            total_written += len(rows_to_insert)
-            print(f"  Written {total_written}/{len(all_chunks)} chunks ...")
+        total_written += len(rows_to_insert)
+        print(f"  Written {total_written}/{len(all_chunks)} chunks ...")
 
     conn.commit()
+    cur.close()
+finally:
+    conn.close()
 
 print(f"\nDone. Embedded {total_written} chunks from {len(unembedded)} documents.")
 
@@ -174,11 +194,15 @@ print(f"\nDone. Embedded {total_written} chunks from {len(unembedded)} documents
 # Verification
 # ---------------------------------------------------------------------------
 
-with get_connection() as conn:
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) AS n FROM weather_embeddings")
-        n = cur.fetchone()["n"]
-        cur.execute("SELECT COUNT(DISTINCT document_id) AS d FROM weather_embeddings")
-        d = cur.fetchone()["d"]
+conn = get_connection()
+try:
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS n FROM weather_embeddings")
+    n = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT document_id) AS d FROM weather_embeddings")
+    d = cur.fetchone()[0]
+    cur.close()
+finally:
+    conn.close()
 
 print(f"weather_embeddings: {n} rows across {d} documents.")
