@@ -54,7 +54,8 @@ def _bootstrap():
 
 @app.route("/healthz")
 def healthz():
-    return jsonify({"status": "ok"})
+    from flask import Response
+    return Response('{"status": "ok"}', status=200, mimetype="application/json")
 
 
 @app.route("/weather/sync", methods=["POST"])
