@@ -73,8 +73,8 @@
                               ▼
               Embedding Notebook (Serverless CPU)
                  ┌──────────────────────┐
-                 │ • pg8000 driver      │
-                 │ • sentence-transf.   │
+                 │ • psycopg2 driver    │
+                 │ • execute_values     │
                  │ • 384-dim vectors    │
                  │ • 800w/100w chunks   │
                  └──────────────────────┘
