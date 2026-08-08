@@ -1,8 +1,8 @@
 """
-Flask app — Massive + Lakebase boilerplate, extended with weather endpoints.
+Flask app — Weather Intelligence on Databricks Lakebase.
 
-Original routes: /healthz, /records, /sync, /watchlist, /news/sync
-New routes:
+Routes:
+  GET  /healthz        — health check
   POST /weather/sync   — harvest NWS data → weather_documents
   POST /weather/search — cosine-similarity search over weather_embeddings
 """
@@ -15,8 +15,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
 import lakebase
-from lakebase import get_connection, run_query, run_write
-from massive_client import MassiveClient
+from lakebase import get_connection, run_query
 from weather_client import DEFAULT_LOCATIONS, WeatherClient, parse_location_string
 
 load_dotenv()
@@ -50,100 +49,13 @@ def _bootstrap():
 
 
 # ---------------------------------------------------------------------------
-# Original boilerplate routes
+# Routes
 # ---------------------------------------------------------------------------
 
 @app.route("/healthz")
 def healthz():
     return jsonify({"status": "ok"})
 
-
-@app.route("/records")
-def get_records():
-    limit = min(int(request.args.get("limit", 100)), 1000)
-    rows = run_query("SELECT * FROM massive_records ORDER BY synced_at DESC LIMIT %s", (limit,))
-    return jsonify(list(rows))
-
-
-@app.route("/sync", methods=["POST"])
-def sync_records():
-    body = request.get_json(silent=True) or {}
-    path = body.get("path", "/records")
-    batch_size = int(request.args.get("batch_size", 500))
-    client = MassiveClient()
-    count = 0
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            for item in client.paginated_get(path, page_size=batch_size):
-                cur.execute(
-                    """
-                    INSERT INTO massive_records (id, data, synced_at)
-                    VALUES (%(id)s, %(data)s, NOW())
-                    ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, synced_at = NOW()
-                    """,
-                    {"id": item.get("id"), "data": str(item)},
-                )
-                count += 1
-        conn.commit()
-    return jsonify({"synced": count})
-
-
-@app.route("/watchlist", methods=["GET"])
-def get_watchlist():
-    rows = run_query("SELECT w.symbol, w.user_id, w.added_at FROM watchlist w ORDER BY w.added_at DESC")
-    return jsonify(list(rows))
-
-
-@app.route("/watchlist", methods=["POST"])
-def add_watchlist():
-    body = request.get_json()
-    symbol = (body or {}).get("symbol", "").upper().strip()
-    user_id = (body or {}).get("user_id", "default")
-    if not symbol:
-        return jsonify({"error": "symbol required"}), 400
-    run_write(
-        "INSERT INTO watchlist (symbol, user_id, added_at) VALUES (%s, %s, NOW()) ON CONFLICT (symbol, user_id) DO NOTHING",
-        (symbol, user_id),
-    )
-    return jsonify({"symbol": symbol, "user_id": user_id})
-
-
-@app.route("/watchlist/<symbol>", methods=["DELETE"])
-def delete_watchlist(symbol: str):
-    n = run_write("DELETE FROM watchlist WHERE symbol = %s", (symbol.upper(),))
-    return jsonify({"deleted": n})
-
-
-@app.route("/news/sync", methods=["POST"])
-def sync_news():
-    body = request.get_json(silent=True) or {}
-    tickers = body.get("tickers", [])
-    limit = int(body.get("limit", 50))
-    client = MassiveClient()
-    count = 0
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            for ticker in tickers:
-                articles = client.get_news(ticker, limit=limit)
-                for a in articles:
-                    cur.execute(
-                        """
-                        INSERT INTO ticker_news_documents
-                            (id, ticker, title, description, article_url, published_utc, payload, synced_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON CONFLICT (id) DO NOTHING
-                        """,
-                        (a.get("id"), ticker, a.get("title", ""), a.get("description", ""),
-                         a.get("article_url", ""), a.get("published_utc"), str(a)),
-                    )
-                    count += 1
-        conn.commit()
-    return jsonify({"synced": count})
-
-
-# ---------------------------------------------------------------------------
-# Weather routes
-# ---------------------------------------------------------------------------
 
 @app.route("/weather/sync", methods=["POST"])
 def weather_sync():
@@ -153,7 +65,7 @@ def weather_sync():
     Body (JSON, optional):
         {"locations": ["Chicago, IL", "30.2672,-97.7431"], "limit": 50}
 
-    If locations is omitted, DEFAULT_LOCATIONS (5 cities) are used.
+    If locations is omitted, 5 default US cities are used.
     Returns: {"synced": <count>}
     """
     body = request.get_json(silent=True) or {}
