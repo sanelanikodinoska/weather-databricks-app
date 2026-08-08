@@ -4,6 +4,29 @@ Day 2 homework: Unstructured Data → Lakebase pgvector → REST API
 
 ---
 
+## Architecture & Day 3 Bridge
+
+This app is intentionally structured to make Day 3 (MCP server + Agent Bricks) a thin layer on top.
+
+`weather_client.py` contains **two API adapters**:
+
+| Adapter | API | Used for |
+|---------|-----|----------|
+| `WeatherClient` | NWS (US-only, no key) | Day 2 harvest pipeline → pgvector semantic search |
+| `OpenMeteoClient` | Open-Meteo (global, no key) | Day 2 real-time endpoints + **Day 3 MCP broker** |
+
+The three `OpenMeteoClient` methods are pre-built as Day 3 MCP tools — zero refactoring needed:
+
+| Method | Day 2 endpoint | Day 3 MCP tool |
+|--------|---------------|----------------|
+| `get_current_weather(lat, lon)` | `GET /weather/current` | `get_current_weather(location)` |
+| `get_forecast(lat, lon, days)` | `GET /weather/forecast` | `get_forecast(location, days)` |
+| `predict_recommendation(lat, lon, date)` | `GET /weather/recommend` | `predict_recommendation(location, date)` |
+
+Day 3 only needs to: (1) add a geocoding step to resolve city names → lat/lon, (2) wrap each method in a `@mcp.tool` decorator in `weather_mcp_server.py`.
+
+---
+
 ## Data Source
 
 **National Weather Service API** (`api.weather.gov`) — free, no API key, generous rate limits.
@@ -72,6 +95,20 @@ POST /weather/search
 **Why 384 dimensions?** Matches `all-MiniLM-L6-v2`, same as the `ticker_news_embeddings` pipeline, so both tables are queryable with the same `<=>` operator conventions.
 
 **Chunking:** `CHUNK_SIZE=800` words, `CHUNK_OVERLAP=100`. Most NWS texts are under 200 words so most documents produce one chunk. The window mainly helps for combined alert description + instruction text.
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/healthz` | Health check |
+| GET | `/weather/current?location=Chicago, IL` | Real-time conditions (Open-Meteo) |
+| GET | `/weather/forecast?location=Chicago, IL&days=7` | Multi-day forecast (Open-Meteo) |
+| GET | `/weather/recommend?location=Chicago, IL&date=2026-08-10` | Travel recommendation with threshold logic |
+| POST | `/weather/sync` | Harvest NWS alerts + forecasts → `weather_documents` |
+| POST | `/weather/search` | Vector similarity search over `weather_embeddings` |
+| GET | `/weather/search?query=...` | Same search + LLM-generated summary (RAG stretch goal) |
 
 ---
 

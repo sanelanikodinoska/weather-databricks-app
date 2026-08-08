@@ -7,3 +7,5 @@ env:
     value: "database"
   - name: LAKEBASE_SECRET_KEY
     value: "lakebase-url"
+  - name: LLM_MODEL
+    value: "databricks-meta-llama-3-3-70b-instruct"
