@@ -248,21 +248,27 @@ POST /weather/search
 - **Task:** Executes notebook to harvest NWS data
 - **Description:** "Collects weather forecasts from National Weather Service for Chicago, Austin, and New York, writes to Delta table workspace.default.weather_documents, which automatically syncs to Postgres via the synced table."
 
-### 7. Serverless Compatibility
+### 7. Database Connectivity
 
-**Compute:** Serverless CPU (no classic cluster required)
+**Driver Implementation:**
 
-**Driver Choice:**
-- **Selected:** `pg8000` (pure-Python Postgres driver)
-- **Avoided:** `psycopg2-binary` (causes SIGABRT crashes on serverless)
-- **Why pg8000:** No C extensions, fully compatible with serverless compute
+| Component | Driver | Method | Performance |
+|-----------|--------|--------|-------------|
+| **Flask App** (`app.py`, `lakebase.py`) | `psycopg2` | Standard connection pooling | Optimal |
+| **Embedding Notebook** | `psycopg2` | `execute_values` batch inserts | 10-100x faster than row-by-row |
+
+**Why psycopg2:**
+- Industry-standard Python Postgres driver
+- `psycopg2.extras.execute_values` enables efficient batch inserts
+- Full pgvector compatibility with `<=>` operator
+- Preferred for production workloads
 
 **Dependencies (from embedding notebook):**
-- `pg8000`: Postgres connectivity
-- `sentence-transformers`: Embedding model
-- `databricks-sdk`: Workspace API client
+- `psycopg2-binary`: Postgres connectivity with batch insert support
+- `sentence-transformers`: Embedding model (384-dim vectors)
+- `databricks-sdk`: Workspace API client for secrets
 
-All packages are serverless-compatible.
+All embedding writes use batch inserts for optimal performance.
 
 ---
 
