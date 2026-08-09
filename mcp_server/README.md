@@ -22,12 +22,18 @@ It exposes 3 tools backed by the [Open-Meteo API](https://open-meteo.com/) (free
 All tools accept any city name (`"Tokyo"`, `"London, UK"`) or `"lat,lon"` coordinates.
 City names are resolved via the [Open-Meteo Geocoding API](https://open-meteo.com/en/docs/geocoding-api).
 
+**Automatic unit detection** — the broker reads `country_code` from the geocoding API and selects units before calling Open-Meteo:
+- US, Liberia, Myanmar → Fahrenheit, mph, inches (imperial)
+- All other countries → Celsius, km/h, mm (metric)
+
+No conversion happens in the agent or system prompt. The tool response includes pre-labeled values (`"19.4°C"`, `"8.7 km/h"`) and a `unit_system` field (`"metric"` or `"imperial"`).
+
 ### Agent Bricks Agent
 
 A Databricks Agent Bricks agent configured in the AI Playground with:
 - **Model**: Meta Llama (Databricks-hosted)
 - **Tools**: The 3 MCP tools above, connected via AI Gateway MCP service registration
-- **System prompt**: Anti-hallucination rules ensuring the agent only reports data it received from a tool call. Automatically adapts units to the queried location's country — US gets Fahrenheit/mph/inches, everywhere else gets Celsius/km/h/mm.
+- **System prompt**: Anti-hallucination rules ensuring the agent only reports data it received from a tool call. Units are handled by the broker — the agent reports values as-is.
 
 ---
 
@@ -149,6 +155,26 @@ The MCP server was verified locally using the FastMCP HTTP transport + MCP proto
 ![Weather recommendations](../images/App_recomndations.png)
 
 ![Retrieve weather data](../images/Retrieve_weather_data.png)
+
+### Automatic unit detection — Bitola, North Macedonia returns Celsius
+
+Ask about Bitola → metric. Ask about Chicago → imperial. The broker decides, not the agent.
+
+![Bitola weather in Celsius](../images/Get_Bitola_weather.png)
+
+```json
+{
+  "location": "Bitola, Bitola, North Macedonia",
+  "unit_system": "metric",
+  "temperature": "19.4°C",
+  "feels_like": "18.7°C",
+  "humidity_pct": 61,
+  "wind_speed": "8.7 km/h",
+  "precipitation": "0.0 mm",
+  "conditions": "Clear sky",
+  "timestamp": "2026-08-09T03:15"
+}
+```
 
 ### Note on daily limit
 
