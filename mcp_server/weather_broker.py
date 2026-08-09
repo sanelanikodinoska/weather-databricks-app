@@ -308,3 +308,46 @@ def predict_recommendation(location: str, date: str) -> Dict[str, Any]:
         "alerts": alerts,
         "confidence": confidence,
     }
+
+
+def convert_units(value: float, from_unit: str, to_unit: str) -> dict:
+    """
+    Convert a weather measurement between unit systems.
+
+    Supported conversions:
+        Temperature : F  ↔ C
+        Wind speed  : mph ↔ kmh
+        Precipitation: inch ↔ mm
+
+    Args:
+        value: Numeric value to convert
+        from_unit: Source unit — F, C, mph, kmh, inch, mm
+        to_unit:   Target unit — F, C, mph, kmh, inch, mm
+
+    Returns:
+        {"value": original, "from_unit": str, "converted": float, "to_unit": str}
+    """
+    from_unit = from_unit.strip().lower()
+    to_unit = to_unit.strip().lower()
+
+    conversions = {
+        ("f", "c"):    lambda v: round((v - 32) * 5 / 9, 1),
+        ("c", "f"):    lambda v: round(v * 9 / 5 + 32, 1),
+        ("mph", "kmh"): lambda v: round(v * 1.60934, 1),
+        ("kmh", "mph"): lambda v: round(v / 1.60934, 1),
+        ("inch", "mm"): lambda v: round(v * 25.4, 1),
+        ("mm", "inch"): lambda v: round(v / 25.4, 3),
+    }
+
+    key = (from_unit, to_unit)
+    if from_unit == to_unit:
+        return {"value": value, "from_unit": from_unit, "converted": value, "to_unit": to_unit}
+    if key not in conversions:
+        raise ValueError(f"Unsupported conversion: {from_unit} → {to_unit}. Supported: F↔C, mph↔kmh, inch↔mm")
+
+    return {
+        "value": value,
+        "from_unit": from_unit,
+        "converted": conversions[key](value),
+        "to_unit": to_unit,
+    }

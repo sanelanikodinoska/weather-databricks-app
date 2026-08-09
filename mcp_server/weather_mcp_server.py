@@ -14,6 +14,7 @@ from weather_broker import (
     get_current_weather,
     get_forecast,
     predict_recommendation,
+    convert_units,
 )
 
 mcp = FastMCP("weather-intelligence")
@@ -76,6 +77,33 @@ def predict_recommendation_tool(location: str, date: str) -> dict:
         return predict_recommendation(location, date)
     except Exception as e:
         return {"error": str(e), "location": location, "date": date}
+
+
+@mcp.tool()
+def convert_units_tool(value: float, from_unit: str, to_unit: str) -> dict:
+    """
+    Convert a weather measurement between unit systems.
+
+    Use this after getting weather data to present values in the user's preferred units.
+    The weather tools always return Fahrenheit, mph, and inches — call this tool to convert.
+
+    Supported conversions:
+        Temperature:   F ↔ C
+        Wind speed:    mph ↔ kmh
+        Precipitation: inch ↔ mm
+
+    Args:
+        value: Numeric value to convert
+        from_unit: Source unit (F, C, mph, kmh, inch, mm)
+        to_unit: Target unit (F, C, mph, kmh, inch, mm)
+
+    Returns:
+        value, from_unit, converted, to_unit
+    """
+    try:
+        return convert_units(value, from_unit, to_unit)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":
