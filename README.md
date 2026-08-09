@@ -1,174 +1,207 @@
-# Weather Intelligence — NWS Vector Search Pipeline
+# Day 3: Weather Intelligence MCP Server + Agent Bricks Agent
 
-Day 2 homework: Unstructured Data → Lakebase pgvector → REST API
-
----
-
-## Architecture & Day 3 Bridge
-
-This app is intentionally structured to make Day 3 (MCP server + Agent Bricks) a thin layer on top.
-
-`weather_client.py` contains **two API adapters**:
-
-| Adapter | API | Used for |
-|---------|-----|----------|
-| `WeatherClient` | NWS (US-only, no key) | Day 2 harvest pipeline → pgvector semantic search |
-| `OpenMeteoClient` | Open-Meteo (global, no key) | Day 2 real-time endpoints + **Day 3 MCP broker** |
-
-The three `OpenMeteoClient` methods are pre-built as Day 3 MCP tools — zero refactoring needed:
-
-| Method | Day 2 endpoint | Day 3 MCP tool |
-|--------|---------------|----------------|
-| `get_current_weather(lat, lon)` | `GET /weather/current` | `get_current_weather(location)` |
-| `get_forecast(lat, lon, days)` | `GET /weather/forecast` | `get_forecast(location, days)` |
-| `predict_recommendation(lat, lon, date)` | `GET /weather/recommend` | `predict_recommendation(location, date)` |
-
-Day 3 only needs to: (1) add a geocoding step to resolve city names → lat/lon, (2) wrap each method in a `@mcp.tool` decorator in `weather_mcp_server.py`.
+Builds on [Day 2](../README.md)'s NWS → Lakebase pgvector pipeline.
+Day 3 adds a **FastMCP server** exposing weather tools over the Model Context Protocol,
+wired to a **Databricks Agent Bricks agent** in the AI Playground.
 
 ---
 
-## Data Source
+## What was built
 
-**National Weather Service API** (`api.weather.gov`) — free, no API key, generous rate limits.
+### MCP Server (`mcp_server/`)
 
-Returns rich unstructured narrative text ideal for embedding:
-- **Active alerts** — `GET /alerts/active?point={lat},{lon}` — free-text description + instruction (e.g. "A Flash Flood Warning means…")
-- **Forecast periods** — `GET /gridpoints/{office}/{x},{y}/forecast` — narrative `detailedForecast` per period (e.g. "Partly cloudy, high near 72. Southwest wind 10–15 mph")
+A self-contained FastMCP server deployed as a separate Databricks App.
+It exposes 3 tools backed by the [Open-Meteo API](https://open-meteo.com/) (free, no key, global):
 
-No auth plumbing needed — the focus stays on harvest → vectorize → retrieve.
+| Tool | Description |
+|------|-------------|
+| `get_current_weather_tool(location)` | Real-time temperature, conditions, humidity, wind |
+| `get_forecast_tool(location, days)` | Multi-day daily forecast (1–16 days) |
+| `predict_recommendation_tool(location, date)` | Travel/activity recommendation with threshold logic |
+
+All tools accept any city name (`"Tokyo"`, `"London, UK"`) or `"lat,lon"` coordinates.
+City names are resolved via the [Open-Meteo Geocoding API](https://open-meteo.com/en/docs/geocoding-api).
+
+**Automatic unit detection** — the broker reads `country_code` from the geocoding API and selects units before calling Open-Meteo:
+- US, Liberia, Myanmar → Fahrenheit, mph, inches (imperial)
+- All other countries → Celsius, km/h, mm (metric)
+
+No conversion happens in the agent or system prompt. The tool response includes pre-labeled values (`"19.4°C"`, `"8.7 km/h"`) and a `unit_system` field (`"metric"` or `"imperial"`).
+
+### Agent Bricks Agent
+
+A Databricks Agent Bricks agent configured in the AI Playground with:
+- **Model**: Meta Llama (Databricks-hosted)
+- **Tools**: The 3 MCP tools above, connected via AI Gateway MCP service registration
+- **System prompt**: Anti-hallucination rules ensuring the agent only reports data it received from a tool call. Units are handled by the broker — the agent reports values as-is.
 
 ---
 
 ## Architecture
 
 ```
-POST /weather/sync
-    └─► WeatherClient (weather_client.py)
-            ├─ GET /points/{lat},{lon}           → grid resolution
-            ├─ GET /alerts/active?point=...      → active alerts
-            └─ GET /gridpoints/{id}/{x},{y}/forecast → forecast periods
-        ↓ normalise → upsert → weather_documents (Lakebase Postgres)
-
-notebooks/ingest_weather_embeddings.py   [run in Databricks]
-    └─► read unembedded rows from weather_documents
-        chunk narrative_text (800 words / 100 overlap)
-        embed with all-MiniLM-L6-v2 (384-dim)
-        write → weather_embeddings via psycopg2 execute_values
-
-POST /weather/search
-    └─► embed query (same model, loaded at app startup)
-        pgvector <=> cosine distance over weather_embeddings
-        JOIN weather_documents → return top_k as JSON
+AI Playground (Agent Bricks)
+    └─► AI Gateway → MCP Service (workspace.weather.weather-mcp-server)
+            └─► mcp-weather-app (Databricks App)
+                    └─► weather_mcp_server.py (FastMCP, transport=http)
+                            └─► weather_broker.py
+                                    ├─► Open-Meteo Geocoding API  (city → lat/lon)
+                                    └─► Open-Meteo Forecast API   (weather data)
 ```
 
 ---
 
-## Schema
+## Files
 
-### `weather_documents`
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | TEXT PK | Alert id from NWS, or SHA-256 hash of location+period for forecasts |
-| `location` | TEXT | City, ST label |
-| `source_type` | TEXT | `'alert'` or `'forecast'` |
-| `headline` | TEXT | Alert event name or "Period — Location" |
-| `narrative_text` | TEXT | Free-text body to embed |
-| `issued_at` | TIMESTAMPTZ | `effective` / `startTime` from NWS |
-| `payload` | JSONB | Raw NWS properties for provenance |
-| `synced_at` | TIMESTAMPTZ | When this row was written |
-
-### `weather_embeddings`
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | SERIAL PK | |
-| `document_id` | TEXT FK | References weather_documents |
-| `chunk_index` | INT | Chunk position within the document |
-| `chunk_text` | TEXT | The text slice that was embedded |
-| `embedding` | vector(384) | all-MiniLM-L6-v2 output |
-| `model_name` | TEXT | For future model versioning |
-| `created_at` | TIMESTAMPTZ | |
-
-**Index:** `USING hnsw (embedding vector_cosine_ops)` — enables sub-linear ANN search.
-
-**Why 384 dimensions?** Matches `all-MiniLM-L6-v2`, same as the `ticker_news_embeddings` pipeline, so both tables are queryable with the same `<=>` operator conventions.
-
-**Chunking:** `CHUNK_SIZE=800` words, `CHUNK_OVERLAP=100`. Most NWS texts are under 200 words so most documents produce one chunk. The window mainly helps for combined alert description + instruction text.
+| File | Purpose |
+|------|---------|
+| `weather_mcp_server.py` | FastMCP server — 3 `@mcp.tool` wrappers |
+| `weather_broker.py` | HTTP adapter — geocoding + Open-Meteo API calls, self-contained |
+| `app.yaml` | Databricks App config (`python weather_mcp_server.py`) |
+| `requirements.txt` | `fastmcp>=3.2.0`, `requests` |
+| `agent_system_prompt.md` | System prompt for the Agent Bricks agent |
 
 ---
 
-## API Endpoints
+## Threshold logic (`predict_recommendation_tool`)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/healthz` | Health check |
-| GET | `/weather/current?location=Chicago, IL` | Real-time conditions (Open-Meteo) |
-| GET | `/weather/forecast?location=Chicago, IL&days=7` | Multi-day forecast (Open-Meteo) |
-| GET | `/weather/recommend?location=Chicago, IL&date=2026-08-10` | Travel recommendation with threshold logic |
-| POST | `/weather/sync` | Harvest NWS alerts + forecasts → `weather_documents` |
-| POST | `/weather/search` | Vector similarity search over `weather_embeddings` |
-| GET | `/weather/search?query=...` | Same search + LLM-generated summary (RAG stretch goal) |
+The recommendation tool applies rule-based logic — it does not echo raw API data:
+
+| Condition | Alert |
+|-----------|-------|
+| Precip probability ≥ 60% | "High chance of rain — bring umbrella." |
+| Precip probability ≥ 40% | "Possible rain — consider an umbrella." |
+| Weather code ≥ 95 (thunderstorm) | "Thunderstorm — avoid outdoor travel." |
+| Weather code 71–77 (snow) | "Snow expected — check road conditions." |
+| High temp < 40°F | "Very cold — heavy winter clothing required." |
+| High temp < 55°F | "Cool — light jacket recommended." |
+| High temp > 95°F | "Extreme heat — stay hydrated." |
+
+Returns: `recommendation` (plain English), `alerts` (list), `confidence` (high/medium/low).
 
 ---
 
-## End-to-End Run
+## Deployment
 
-### 1. Deploy the app
+### 1. Deploy the MCP server as a Databricks App
 
-Tables are created automatically on startup via `ensure_weather_tables()` in `lakebase.py`.
+In Databricks → Apps → Create app → Custom → connect this repo → set source path to `mcp_server/`.
+Name the app starting with `mcp-` (e.g. `mcp-weather`) — required for AI Playground discoverability.
 
-### 2. Sync weather documents
-
-```bash
-curl -X POST https://<your-app-url>/weather/sync \
-  -H "Content-Type: application/json" \
-  -d '{"locations": ["Chicago, IL", "Austin, TX", "Miami, FL"], "limit": 50}'
+The MCP endpoint will be at:
+```
+https://<app-url>/mcp
 ```
 
-Response: `{"synced": <n>}`
+### 2. Register in AI Gateway
 
-Omit `locations` to use 5 built-in defaults (Chicago, Austin, New York, Seattle, Miami).
+Databricks → AI Gateway → MCPs → + MCP → Connect existing MCP server → paste the `/mcp` URL.
+Auth: Bearer token (Databricks PAT).
 
-Locations must be either a known label (`"Chicago, IL"`) or a `"lat,lon"` string (`"41.8781,-87.6298"`).
+### 3. Wire to Agent Bricks
 
-### 3. Run the embedding notebook
+Databricks → Agents → Create Agent → AI Playground → Add tools → Custom → select the registered MCP service.
+Paste the system prompt from `agent_system_prompt.md`.
 
-Open `notebooks/ingest_weather_embeddings.py` in Databricks and run all cells. It reads unembedded documents, chunks, embeds, and writes to `weather_embeddings`. Re-running is safe (`ON CONFLICT DO UPDATE`).
+### 4. Test queries
 
-### 4. Search
+- "What's the weather in Tokyo right now?"
+- "Give me a 5-day forecast for London."
+- "Should I travel to Miami on 2026-08-15?"
 
-```bash
-curl -X POST https://<your-app-url>/weather/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "flash flood risk this weekend", "top_k": 5}'
-```
+---
 
-Response:
+## Evidence
+
+### MCP Server deployed as Databricks App
+
+![MCP server app created](../images/MCP_server_app_created.png)
+
+### MCP Server registered in AI Gateway
+
+![MCP server in AI Gateway](../images/MCP_server_app_in_AI_Gateway.png)
+
+### MCP Server visible and connected in AI Playground
+
+![MCP server visible in Playground](../images/MCP_server_app_visible.png)
+
+![Playground model and MCP tool selection](../images/Playgound_selection_model_mcptool.png)
+
+### Local MCP server running (daily compute limit hit on Databricks Free Edition)
+
+The Databricks Free Edition daily LLM endpoint limit was reached during testing.
+The MCP server was verified locally using the FastMCP HTTP transport + MCP protocol directly.
+
+![Local MCP server running](../images/Local_run.png)
+
+![Session ID obtained via initialize handshake](../images/Get_Session_ID.png)
+
+### Tool call 1 — Current weather (Tokyo)
+
+![Get current weather Tokyo](../images/Get_current_weather.png)
+
+### Tool call 2 — Multi-day forecast (London)
+
+![Get forecast London](../images/Get_forecast_London.png)
+
+### Tool call 3 — Travel recommendation (Miami)
+
+![Get Miami recommendation](../images/Get_Miami_recommendation.png)
+
+### Additional evidence — App UI and endpoint responses
+
+![App UI](../images/App%20UI.png)
+
+![Weather recommendations](../images/App_recomndations.png)
+
+![Retrieve weather data](../images/Retrieve_weather_data.png)
+
+### Automatic unit detection — Bitola, North Macedonia returns Celsius
+
+Ask about Bitola → metric. Ask about Chicago → imperial. The broker decides, not the agent.
+
+![Bitola weather in Celsius](../images/Get_Bitola_weather.png)
+
 ```json
 {
-  "query": "flash flood risk this weekend",
-  "top_k": 5,
-  "results": [
-    {
-      "location": "Chicago, IL",
-      "source_type": "alert",
-      "headline": "Flash Flood Warning",
-      "chunk_text": "A Flash Flood Warning means ...",
-      "similarity": 0.8812
-    }
-  ]
+  "location": "Bitola, Bitola, North Macedonia",
+  "unit_system": "metric",
+  "temperature": "19.4°C",
+  "feels_like": "18.7°C",
+  "humidity_pct": 61,
+  "wind_speed": "8.7 km/h",
+  "precipitation": "0.0 mm",
+  "conditions": "Clear sky",
+  "timestamp": "2026-08-09T03:15"
 }
 ```
 
-`top_k` is clamped to [1, 20].
+### Note on daily limit
+
+![Agent not accessible — token limit](../images/Agent_not_accessible_token_limit.png)
+
+![MCP server app stopped — limit](../images/MCP_server_app_stoppeed_limit.png)
+
+Databricks Free Edition imposes a daily LLM endpoint quota. The screenshots above show the MCP server
+correctly deployed, registered, and responding to tool calls. Full agent chat transcripts via
+Playground are pending the quota reset.
 
 ---
 
-## Known Limitations & Future Improvements
+## Security
 
-- **City name resolution** — NWS only accepts lat/lon. Named locations are matched against a hardcoded default list. A production version would use a geocoding API (Census Geocoder or Nominatim) for arbitrary city names.
-- **Alert availability** — during calm weather periods many locations have zero active alerts; `/weather/sync` will return forecast-only documents. Expected NWS behaviour.
-- **Cold-start latency** — `all-MiniLM-L6-v2` loads at app startup (~3s). Pin to a pre-warmed container in production.
-- **Stretch: scheduled refresh** — add a Databricks Workflow cron (e.g. every 6 hours) on the embedding notebook to keep the vector store current.
-- **Stretch: RAG summary** — `GET /weather/search?query=...` with an LLM call over the top-k results would complete a minimal RAG pipeline. The retrieval infrastructure is already in place.
+No hardcoded credentials. The MCP server calls only public APIs (Open-Meteo, no key required).
+Databricks App authentication is handled via the platform OAuth layer.
+
+---
+
+## Day 2 → Day 3 bridge
+
+The Day 2 `weather_client.py` was pre-structured as the Day 3 broker:
+- `OpenMeteoClient.get_current_weather()` → `get_current_weather_tool`
+- `OpenMeteoClient.get_forecast()` → `get_forecast_tool`
+- `OpenMeteoClient.predict_recommendation()` → `predict_recommendation_tool`
+
+`weather_broker.py` in `mcp_server/` is self-contained (no parent imports) and adds
+global city geocoding via Open-Meteo's Geocoding API, extending Day 2's hardcoded US-city list
+to any city worldwide.
