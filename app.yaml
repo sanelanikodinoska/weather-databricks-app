@@ -1,6 +1,8 @@
 command:
+  - "uv"
+  - "run"
   - "python"
-  - "app.py"
+  - "weather_mcp_server.py"
 
 env:
   - name: LAKEBASE_SECRET_SCOPE
