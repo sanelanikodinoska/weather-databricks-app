@@ -113,6 +113,28 @@ Paste the system prompt from `agent_system_prompt.md`.
 
 ## Evidence
 
+### Agent responses — live in AI Playground
+
+![What's the weather in Tokyo right now](images/What's%20the%20weather%20in%20Tokyo%20right%20now%20-%20agent%20responce.png)
+
+![Give me a 5-day forecast for London](images/Give%20me%20a%205-day%20forecast%20for%20London%20-%20agent%20responce.png)
+
+![Should I travel to Miami on 2026-08-15](images/Should%20I%20travel%20to%20Miami%20on%202026-08-15_%20agent%20responce.png)
+
+![Agent response — unit conversion per metric system](images/Agent_responce_UOM_conversion_per_metric_system.png)
+
+![Agent response — sea temperatures](images/Agent_responce_sea_temperatures.png)
+
+![Agent first answer — asking for precise location](images/Agent_first_answer_asking_presice_location.png)
+
+![Are there any active fires worldwide](images/Are%20there%20any%20active%20fires%20worldwide%20-%20agent%20responce.png)
+
+![What would next winter be like](images/What%20would%20next%20winter%20be%20like%20-%20agent%20responce.png)
+
+![Response trace](images/Responce_trace.png)
+
+---
+
 ### MCP Server deployed as Databricks App
 
 ![MCP server app created](images/MCP_server_app_created.png)
