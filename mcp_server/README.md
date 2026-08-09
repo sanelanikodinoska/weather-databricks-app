@@ -27,7 +27,7 @@ City names are resolved via the [Open-Meteo Geocoding API](https://open-meteo.co
 A Databricks Agent Bricks agent configured in the AI Playground with:
 - **Model**: Meta Llama (Databricks-hosted)
 - **Tools**: The 3 MCP tools above, connected via AI Gateway MCP service registration
-- **System prompt**: Anti-hallucination rules ensuring the agent only reports data it received from a tool call
+- **System prompt**: Anti-hallucination rules ensuring the agent only reports data it received from a tool call. Automatically adapts units to the queried location's country — US gets Fahrenheit/mph/inches, everywhere else gets Celsius/km/h/mm.
 
 ---
 
