@@ -105,6 +105,63 @@ Paste the system prompt from `agent_system_prompt.md`.
 
 ---
 
+## Evidence
+
+### MCP Server deployed as Databricks App
+
+![MCP server app created](../images/MCP_server_app_created.png)
+
+### MCP Server registered in AI Gateway
+
+![MCP server in AI Gateway](../images/MCP_server_app_in_AI_Gateway.png)
+
+### MCP Server visible and connected in AI Playground
+
+![MCP server visible in Playground](../images/MCP_server_app_visible.png)
+
+![Playground model and MCP tool selection](../images/Playgound_selection_model_mcptool.png)
+
+### Local MCP server running (daily compute limit hit on Databricks Free Edition)
+
+The Databricks Free Edition daily LLM endpoint limit was reached during testing.
+The MCP server was verified locally using the FastMCP HTTP transport + MCP protocol directly.
+
+![Local MCP server running](../images/Local_run.png)
+
+![Session ID obtained via initialize handshake](../images/Get_Session_ID.png)
+
+### Tool call 1 — Current weather (Tokyo)
+
+![Get current weather Tokyo](../images/Get_current_weather.png)
+
+### Tool call 2 — Multi-day forecast (London)
+
+![Get forecast London](../images/Get_forecast_London.png)
+
+### Tool call 3 — Travel recommendation (Miami)
+
+![Get Miami recommendation](../images/Get_Miami_recommendation.png)
+
+### Additional evidence — App UI and endpoint responses
+
+![App UI](../images/App%20UI.png)
+
+![Weather recommendations](../images/App_recomndations.png)
+
+![Retrieve weather data](../images/Retrieve_weather_data.png)
+
+### Note on daily limit
+
+![Agent not accessible — token limit](../images/Agent_not_accessible_token_limit.png)
+
+![MCP server app stopped — limit](../images/MCP_server_app_stoppeed_limit.png)
+
+Databricks Free Edition imposes a daily LLM endpoint quota. The screenshots above show the MCP server
+correctly deployed, registered, and responding to tool calls. Full agent chat transcripts via
+Playground are pending the quota reset.
+
+---
+
 ## Security
 
 No hardcoded credentials. The MCP server calls only public APIs (Open-Meteo, no key required).
